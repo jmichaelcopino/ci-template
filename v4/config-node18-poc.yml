@@ -31,7 +31,7 @@ jobs:
                       command: |
                         echo 'CHECK ONE'
                         export PREFIX=$(aws ssm get-parameter --name /${ENVIRONMENT}/circleci/github/user/${CIRCLE_USERNAME} --region $AWS_REGION | jq -r .Parameter.Value)
-                        echo $CIRCLE_BRANCH
+                        echo $CIRCLE_USERNAME
                         echo $PREFIX
                         STAGE=dev PREFIX=jm npm run all:test
             - unless:
@@ -44,6 +44,15 @@ jobs:
                       name: Run NPM tests
                       command: |
                         echo 'CHECK TWO'
+                        if [[ $ENV_NAME == "development" ]]; then
+                          export ENVIRONMENT=dev
+                        elif [[ $ENV_NAME == "staging" ]]; then
+                          export ENVIRONMENT=stg
+                        elif [[ $ENV_NAME == "production" ]]; then
+                          export ENVIRONMENT=prd
+                        else
+                          export ENVIRONMENT=$ENV_NAME
+                        fi
                         if [[ $CIRCLE_BRANCH != "main" ]]; then
                           export PREFIX=$(aws ssm get-parameter --name /${ENVIRONMENT}/circleci/github/user/${CIRCLE_USERNAME} --region $AWS_REGION | jq -r .Parameter.Value)
                           if [[ -z $PREFIX ]]; then
@@ -53,7 +62,7 @@ jobs:
                         else
                           export IMAGE_TAG=${ENVIRONMENT}-<< pipeline.number >>
                         fi
-                        echo $CIRCLE_BRANCH
+                        echo $CIRCLE_USERNAME
                         echo $PREFIX
                         npm install mocha-junit-reporter
                         STAGE=dev PREFIX=jm npm run all:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
