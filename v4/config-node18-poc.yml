@@ -43,8 +43,17 @@ jobs:
                       name: Run NPM tests
                       command: |
                         echo 'CHECK TWO'
+                         if [[ $CIRCLE_BRANCH != "main" ]]; then
+                            export PREFIX=$(aws ssm get-parameter --name /${ENVIRONMENT}/circleci/github/user/${CIRCLE_USERNAME} --region $AWS_REGION | jq -r .Parameter.Value)
+                            if [[ -z $PREFIX ]]; then
+                              export PREFIX=$CIRCLE_USERNAME
+                            fi
+                            export IMAGE_TAG=${PREFIX}-${ENVIRONMENT}-<< pipeline.number >>
+                          else
+                            export IMAGE_TAG=${ENVIRONMENT}-<< pipeline.number >>
+                          fi
                         echo $CIRCLE_BRANCH
-                        echo 'export AWS_ACCOUNT_ID=$AWS_ACCOUNT_NUMBER' >> "$BASH_ENV"
+                        echo $PREFIX
                         npm install mocha-junit-reporter
                         STAGE=dev PREFIX=jm npm run all:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
                   - store_test_results:
