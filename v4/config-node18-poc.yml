@@ -29,6 +29,9 @@ jobs:
                   - run:
                       name: Run NPM tests
                       command: |
+                        echo 'CHECK ONE'
+                        echo $CIRCLE_BRANCH
+                        echo 'export AWS_ACCOUNT_ID=$AWS_ACCOUNT_NUMBER' >> "$BASH_ENV"
                         STAGE=dev PREFIX=jm npm run all:test
             - unless:
                 condition:
@@ -39,6 +42,9 @@ jobs:
                   - run:
                       name: Run NPM tests
                       command: |
+                        echo 'CHECK TWO'
+                        echo $CIRCLE_BRANCH
+                        echo 'export AWS_ACCOUNT_ID=$AWS_ACCOUNT_NUMBER' >> "$BASH_ENV"
                         npm install mocha-junit-reporter
                         STAGE=dev PREFIX=jm npm run all:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
                   - store_test_results:
