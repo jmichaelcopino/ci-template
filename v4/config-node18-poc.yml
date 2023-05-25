@@ -44,7 +44,10 @@ jobs:
                           export PREFIX=$CIRCLE_USERNAME
                         fi
                         npm install mocha-junit-reporter
-                        npm run all:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
+                        echo 'STAGE ONE'
+                        echo $ENV_NAME
+                        echo $PREFIX
+                        npm run unit:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
             - unless:
                 condition:
                   or:
@@ -68,7 +71,10 @@ jobs:
                           export PREFIX=$CIRCLE_USERNAME
                         fi
                         npm install mocha-junit-reporter
-                        npm run all:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
+                        echo 'STAGE TWO'
+                        echo $ENV_NAME
+                        echo $PREFIX
+                        npm run unit:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
                   - store_test_results:
                       path: test-results
                   - store_artifacts:
