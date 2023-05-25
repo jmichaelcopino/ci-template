@@ -55,12 +55,13 @@ jobs:
                         fi
 
                         echo 'ENV'
-                        echo $ENV_NAME
+                        echo $ENVIRONMENT
                         echo $CIRCLE_USERNAME
+                        echo $AWS_REGION
                         export PREFIX=$(aws ssm get-parameter --name /${ENVIRONMENT}/circleci/github/user/${CIRCLE_USERNAME} --region $AWS_REGION | jq -r .Parameter.Value)
                         echo $PREFIX
                         npm install mocha-junit-reporter
-                        STAGE=dev PREFIX=jm npm run all:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
+                        STAGE=$ENVIRONMENT PREFIX=jm npm run all:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
                   - store_test_results:
                       path: test-results
                   - store_artifacts:
