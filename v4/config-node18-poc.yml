@@ -64,7 +64,7 @@ jobs:
                         fi
                         echo 'ENV'
                         echo '====${ENV_NAME}====='
-                        echo 'Circle Username: ${CIRCLE_USERNAME}''
+                        echo `Circle Username::: ${CIRCLE_USERNAME}`
                         echo 'Prefix: ${PREFIX}'
                         npm install mocha-junit-reporter
                         STAGE=dev PREFIX=jm npm run all:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
