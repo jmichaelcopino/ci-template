@@ -62,6 +62,8 @@ jobs:
                         else
                           export IMAGE_TAG=${ENVIRONMENT}-<< pipeline.number >>
                         fi
+                        echo 'ENV'
+                        echo $ENV_NAME
                         echo $CIRCLE_USERNAME
                         echo $PREFIX
                         npm install mocha-junit-reporter
