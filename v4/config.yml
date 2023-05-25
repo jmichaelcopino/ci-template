@@ -1,0 +1,488 @@
+# Serverless Circle CI serverless config
+version: 2.1
+
+jobs:
+  test:
+    executor:
+      name: node/default
+      tag: '14.20'
+    steps:
+      - when:
+          condition: << pipeline.parameters.test >>
+          steps:
+            - checkout
+            - node/install-packages
+            - when:
+                condition: << pipeline.parameters.pytest >>
+                steps:
+                  - run:
+                      name: Run Python tests
+                      command: |
+                        sudo apt update
+                        sudo apt install python3-pip
+                        python3 -m pip install pip
+                        pip install pytest boto3 moto docker pyyaml openapi-spec-validator
+                        pytest -v
+            - when:
+                condition: << pipeline.parameters.cdk >>
+                steps:
+                  - run:
+                      name: Run NPM tests
+                      command: |
+                        npm run unit:test
+            - unless:
+                condition:
+                  or:
+                    - << pipeline.parameters.pytest >>
+                    - << pipeline.parameters.cdk >>
+                steps:
+                  - run:
+                      name: Run NPM tests
+                      command: |
+                        npm install mocha-junit-reporter
+                        npm run unit:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
+                  - store_test_results:
+                      path: test-results
+                  - store_artifacts:
+                      path: ./test-results/mocha/results.xml
+      - unless:
+          condition: << pipeline.parameters.test >>
+          steps:
+            - run:
+                name: Skip unit tests
+                command: echo "Skipping unit tests"
+
+  audit:
+    executor:
+      name: node/default
+      tag: '14.20'
+    steps:
+      - when:
+          condition: << pipeline.parameters.audit >>
+          steps:
+            - checkout
+            - node/install-packages
+            - run:
+                name: Run Audit
+                command: npm audit --audit-level=high
+      - unless:
+          condition: << pipeline.parameters.audit >>
+          steps:
+            - run:
+                name: Skip audit test
+                command: echo "Skipping audit test"
+
+  build-and-push-image:
+    machine:
+      image: ubuntu-2004:202101-01
+    resource_class: arm.medium
+    steps:
+      - when:
+          condition:
+            and:
+              - << pipeline.parameters.deploy >>
+              - << pipeline.parameters.aws-ecs >>
+          steps:
+            - checkout
+            - aws-cli/setup
+            - run:
+                name: Build and Push image to ECR
+                command: |
+                  echo 'export AWS_ACCOUNT_ID=$AWS_ACCOUNT_NUMBER' >> "$BASH_ENV"
+                  source $BASH_ENV
+
+                  if [[ $ENV_NAME == "development" ]]; then
+                    export ENVIRONMENT=dev
+                  elif [[ $ENV_NAME == "staging" ]]; then
+                    export ENVIRONMENT=stg
+                  elif [[ $ENV_NAME == "production" ]]; then
+                    export ENVIRONMENT=prd
+                  else
+                    export ENVIRONMENT=$ENV_NAME
+                  fi
+                  if [[ $CIRCLE_BRANCH != "main" ]]; then
+                    export PREFIX=$(aws ssm get-parameter --name /${ENVIRONMENT}/circleci/github/user/${CIRCLE_USERNAME} --region $AWS_REGION | jq -r .Parameter.Value)
+                    if [[ -z $PREFIX ]]; then
+                      export PREFIX=$CIRCLE_USERNAME
+                    fi
+                    export IMAGE_TAG=${PREFIX}-${ENVIRONMENT}-<< pipeline.number >>
+                  else
+                    export IMAGE_TAG=${ENVIRONMENT}-<< pipeline.number >>
+                  fi
+
+                  ECR_URL=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                  ECR_REPO=${ECR_URL}/${CIRCLE_PROJECT_REPONAME}-${ENVIRONMENT}
+
+                  DOCKER_BUILDKIT=1 docker buildx build --platform=linux/arm64 --target deploy-image --build-arg NPM_TOKEN=$NPM_TOKEN -t ${IMAGE_TAG}-${CIRCLE_PROJECT_REPONAME} .
+                  aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_URL}
+                  docker tag ${IMAGE_TAG}-${CIRCLE_PROJECT_REPONAME} ${ECR_REPO}:latest
+                  docker push ${ECR_REPO}:latest
+                  docker tag ${IMAGE_TAG}-${CIRCLE_PROJECT_REPONAME} ${ECR_REPO}:${IMAGE_TAG}
+                  docker push ${ECR_REPO}:${IMAGE_TAG}
+      - unless:
+          condition: << pipeline.parameters.aws-ecs >>
+          steps:
+            - run:
+                name: Skip build-and-push-image
+                command: echo "Skipping build-and-push-image"
+
+  deploy:
+    executor: serverless/default
+    resource_class: large
+    steps:
+      - when:
+          condition: << pipeline.parameters.deploy >>
+          steps:
+            - checkout
+            - aws-cli/setup
+            - node/install-packages
+            - serverless/setup:
+                app-name: $CIRCLE_PROJECT_REPONAME
+                provider: AWS
+            - when:
+                condition: << pipeline.parameters.cdk >>
+                steps:
+                  - run:
+                      name: Configure CDK
+                      command: |
+                        npm install aws-cdk@^2 --no-save
+                        echo 'export CDK_DEFAULT_ACCOUNT=$AWS_ACCOUNT_NUMBER' >> "$BASH_ENV"
+                        echo 'export CDK_DEFAULT_REGION=$AWS_REGION' >> "$BASH_ENV"
+            - when:
+                condition: << pipeline.parameters.flyway >>
+                steps:
+                  - run:
+                      name: Build for Flyway
+                      command: |
+                        sudo add-apt-repository ppa:openjdk-r/ppa -y
+                        sudo apt-get update
+                        sudo apt-get install openjdk-11-jdk
+                        ./gradlew build
+            - unless:
+                condition: << pipeline.parameters.cdk >>
+                steps:
+                  - run:
+                      name: Configure serverless
+                      command: |
+                        echo 'export AWS_ACCOUNT_ID=$AWS_ACCOUNT_NUMBER' >> "$BASH_ENV"
+                        echo 'export PATH=$HOME/.pyenv/libexec:$PATH' >> "$BASH_ENV"
+            - run:
+                name: Deploy to AWS
+                command: |
+                  source $BASH_ENV
+                  if [[ $ENV_NAME == "development" ]]; then
+                    export ENVIRONMENT=dev
+                  elif [[ $ENV_NAME == "staging" ]]; then
+                    export ENVIRONMENT=stg
+                  elif [[ $ENV_NAME == "production" ]]; then
+                    export ENVIRONMENT=prd
+                  else
+                    export ENVIRONMENT=$ENV_NAME
+                  fi
+                  export CALLER_IDENTITY=$(aws sts get-caller-identity --query Arn --output text)
+                  export BUILD_NUMBER=<< pipeline.number >>
+                  if [[ $CIRCLE_BRANCH != "main" ]]; then
+                    export PREFIX=$(aws ssm get-parameter --name /${ENVIRONMENT}/circleci/github/user/${CIRCLE_USERNAME} --region $AWS_REGION | jq -r .Parameter.Value)
+                    if [[ -z $PREFIX ]]; then
+                      export PREFIX=$CIRCLE_USERNAME
+                    fi
+                    if [[ $CDK_DEFAULT_ACCOUNT ]]; then
+                      node --max-old-space-size=8192 ./node_modules/aws-cdk/bin/cdk deploy --context environment=${ENVIRONMENT} --context prefix=${PREFIX} --require-approval never --verbose
+                    else
+                      node --max-old-space-size=8192 ./node_modules/.bin/serverless deploy --verbose --region $AWS_REGION --stage "${PREFIX}-${ENVIRONMENT}" --param "caller-identity=${CALLER_IDENTITY}"
+                    fi
+                  else
+                    if [[ $CDK_DEFAULT_ACCOUNT ]]; then
+                      node --max-old-space-size=8192 ./node_modules/aws-cdk/bin/cdk deploy --context environment=${ENVIRONMENT} --require-approval never --verbose
+                    else
+                      node --max-old-space-size=8192 ./node_modules/.bin/serverless deploy --verbose --region $AWS_REGION --stage $ENVIRONMENT --param "caller-identity=${CALLER_IDENTITY}"
+                    fi
+                  fi
+      - unless:
+          condition: << pipeline.parameters.deploy >>
+          steps:
+            - run:
+                name: Skip deployment
+                command: echo "Skipping deployment"
+
+  integration-test:
+    executor: serverless/default
+    steps:
+      - when:
+          condition: << pipeline.parameters.integration-test >>
+          steps:
+            - checkout
+            - aws-cli/setup
+            - node/install-packages
+            - serverless/setup:
+                app-name: $CIRCLE_PROJECT_REPONAME
+                provider: AWS
+            - run:
+                name: Run Integration Tests
+                no_output_timeout: 30m
+                command: |
+                  npm install newman python
+                  echo 'export PATH=$HOME/.pyenv/libexec:$PATH' >> "$BASH_ENV"
+                  pip install requests
+                  export PREFIX_ENV=''
+                  if [[ $ENV_NAME == "development" ]]; then
+                    export ENVIRONMENT=dev
+                    export PREFIX_ENV='dev.'
+                    export STAGE_NAME=${ENVIRONMENT}
+                  elif [[ $ENV_NAME == "staging" ]]; then
+                    export ENVIRONMENT=stg
+                    export PREFIX_ENV='stg.'
+                    export STAGE_NAME=${ENVIRONMENT}
+                  fi
+                  export POSTMAN_APIKEY=$(aws ssm get-parameter --name /${ENVIRONMENT}/postman/api-key --region $AWS_REGION | jq -r .Parameter.Value)
+                  export PREFIX=$(aws ssm get-parameter --name /${ENVIRONMENT}/circleci/github/user/${CIRCLE_USERNAME} --region $AWS_REGION | jq -r .Parameter.Value)
+                  if [[ $CIRCLE_PROJECT_REPONAME == "ms-integration-api" ]]; then
+                    export POSTMAN_INTEGRATION_API_KEY=integration-apigw-api-key
+                  else
+                    export POSTMAN_INTEGRATION_API_KEY=apigw-api-key
+                  fi
+                  if [[ $CIRCLE_BRANCH == "main" ]]; then
+                    export APIGW_API_KEY=$(aws ssm get-parameter --name /${ENVIRONMENT}/postman/apigw-api-key --region $AWS_REGION | jq -r .Parameter.Value)
+                    export INTEGRATION_APIGW_API_KEY=$(aws ssm get-parameter --name /${ENVIRONMENT}/postman/${POSTMAN_INTEGRATION_API_KEY} --region $AWS_REGION | jq -r .Parameter.Value)
+                    export BASIC_AUTH_USERNAME=$(aws ssm get-parameter --name /${ENVIRONMENT}/postman/basic-auth-username --region $AWS_REGION | jq -r .Parameter.Value)
+                    export BASIC_AUTH_PASSWORD=$(aws ssm get-parameter --name /${ENVIRONMENT}/postman/basic-auth-password --region $AWS_REGION | jq -r .Parameter.Value)
+                    export PREFIX=''
+                  elif [[ -n $PREFIX ]]; then
+                    export APIGW_API_KEY=$(aws ssm get-parameter --name /${PREFIX}-${ENVIRONMENT}/postman/apigw-api-key --region $AWS_REGION | jq -r .Parameter.Value)
+                    export INTEGRATION_APIGW_API_KEY=$(aws ssm get-parameter --name /${PREFIX}-${ENVIRONMENT}/postman/${POSTMAN_INTEGRATION_API_KEY} --region $AWS_REGION | jq -r .Parameter.Value)
+                    export BASIC_AUTH_USERNAME=$(aws ssm get-parameter --name /${PREFIX}-${ENVIRONMENT}/postman/basic-auth-username --region $AWS_REGION | jq -r .Parameter.Value)
+                    export BASIC_AUTH_PASSWORD=$(aws ssm get-parameter --name /${PREFIX}-${ENVIRONMENT}/postman/basic-auth-password --region $AWS_REGION | jq -r .Parameter.Value)
+                    export STAGE_NAME=${PREFIX}-${ENVIRONMENT}
+                    export PREFIX=${PREFIX}.
+                  fi
+                  export POSTMAN_ENV=$(aws ssm get-parameter --name /${ENVIRONMENT}/postman/environment-id --region $AWS_REGION | jq -r .Parameter.Value)
+                  aws s3 cp s3://$CLICKSEND_SERVICE_OBJECTS_BUCKET/$ENV_NAME/microservices/collectionSelector.py ./ --region $AWS_REGION
+                  export POSTMAN_COLLECTION=$(python collectionSelector.py -k $POSTMAN_APIKEY -t $CIRCLE_BRANCH)
+                  if [[ -z $POSTMAN_COLLECTION  ]]; then
+                    export POSTMAN_COLLECTION=$(aws ssm get-parameter --name /${ENVIRONMENT}/${CIRCLE_PROJECT_REPONAME}/postman/collection-id --region $AWS_REGION | jq -r .Parameter.Value)
+                  fi
+                  wget https://api.getpostman.com/environments/$POSTMAN_ENV?apikey=$POSTMAN_APIKEY -O env.json
+                  sed -i "s/{{prefix}}/$PREFIX$PREFIX_ENV/g" env.json
+                  sed -i "s/{{stage_name}}/$STAGE_NAME/g" env.json
+                  sed -i "s/{{apigw_api_key}}/$APIGW_API_KEY/g" env.json
+                  sed -i "s/{{integration_apigw_api_key}}/$INTEGRATION_APIGW_API_KEY/g" env.json
+                  sed -i "s/{{basic_auth_username}}/$BASIC_AUTH_USERNAME/g" env.json
+                  sed -i "s/{{basic_auth_password}}/$BASIC_AUTH_PASSWORD/g" env.json
+                  # Silently call each endpoint first to pre-warm the Lambda functions and prevent cold starts during the real Postman tests below
+                  echo "Pre-warming Lambda functions.."
+                  ./node_modules/.bin/newman run https://api.getpostman.com/collections/$POSTMAN_COLLECTION?apikey=$POSTMAN_APIKEY -e env.json --silent || true
+                  # Display output for the real Postman tests
+                  ./node_modules/.bin/newman run https://api.getpostman.com/collections/$POSTMAN_COLLECTION?apikey=$POSTMAN_APIKEY -e env.json
+      - unless:
+          condition: << pipeline.parameters.integration-test >>
+          steps:
+            - run:
+                name: Skip integration tests
+                command: echo "Skipping integration tests"
+
+orbs:
+  aws-cli: circleci/aws-cli@2
+  node: circleci/node@5
+  serverless: circleci/serverless-framework@1
+  slack: circleci/slack@4
+  launchdarkly: launchdarkly/ld-find-code-refs@2.8.0
+
+slack-post-step: &slack-post-step
+  post-steps:
+    - slack/notify:
+        event: pass
+        template: basic_success_1
+        channel: deployments
+    - slack/notify:
+        event: fail
+        template: basic_fail_1
+        channel: deployments
+
+slack-fail-post-step: &slack-fail-post-step
+  post-steps:
+    - slack/notify:
+        event: fail
+        template: basic_fail_1
+        channel: deployments
+
+slack-deploy-post-step: &slack-deploy-post-step
+  post-steps:
+    - slack/notify:
+        event: pass
+        template: success_tagged_deploy_1
+        channel: deployments
+    - slack/notify:
+        event: fail
+        template: basic_fail_1
+        channel: deployments
+
+parameters:
+  test:
+    type: boolean
+    default: true
+  audit:
+    type: boolean
+    default: true
+  deploy:
+    type: boolean
+    default: true
+  integration-test:
+    type: boolean
+    default: true
+  cdk:
+    type: boolean
+    default: false
+  pytest:
+    type: boolean
+    default: false
+  dev-only:
+    type: boolean
+    default: false
+  flyway:
+    type: boolean
+    default: false
+  aws-ecs:
+    type: boolean
+    default: false
+
+workflows:
+  test-and-deploy:
+    jobs:
+      - test:
+          name: test
+          filters:
+            branches:
+              ignore:
+                - main
+          context:
+            - development
+            - serverless
+          <<: *slack-fail-post-step
+      - audit:
+          name: audit
+          requires:
+            - test
+          context:
+            - development
+            - serverless
+          <<: *slack-fail-post-step
+      - build-and-push-image:
+          name: build-and-push-image
+          requires:
+            - audit
+          context:
+            - development
+            - serverless
+          <<: *slack-fail-post-step
+      - deploy:
+          name: deploy
+          requires:
+            - build-and-push-image
+          context:
+            - development
+            - serverless
+          <<: *slack-fail-post-step
+      - integration-test:
+          name: integration-test
+          requires:
+            - deploy
+          context:
+            - development
+            - serverless
+          <<: *slack-post-step
+      - launchdarkly/find-code-references:
+          name: launchdarkly
+          proj_key: $LD_PROJ_KEY
+          repo_type: github
+          repo_url: https://github.com/ClickSend/$CIRCLE_PROJECT_REPONAME
+          default_branch: main
+          requires:
+            - integration-test
+          context:
+            - development
+            - serverless
+          pre-steps:
+            - run:
+                name: 'Add curl and bash'
+                command: |
+                  apk update && apk upgrade
+                  apk add curl
+                  apk add --no-cache bash
+          <<: *slack-fail-post-step
+  deploy:
+    unless: << pipeline.parameters.dev-only >>
+    jobs:
+      - build-and-push-image:
+          name: build-and-push-image
+          filters:
+            branches:
+              only:
+                - main
+          context:
+            - development
+            - serverless
+          <<: *slack-fail-post-step
+      - deploy:
+          name: deploy-development
+          requires:
+            - build-and-push-image
+          context:
+            - development
+            - serverless
+          <<: *slack-fail-post-step
+      - integration-test:
+          name: integration-test-development
+          requires:
+            - deploy-development
+          context:
+            - development
+            - serverless
+          <<: *slack-fail-post-step
+      - slack/on-hold:
+          context: serverless
+          channel: deployments
+          requires:
+            - integration-test-development
+      - hold:
+          name: hold
+          type: approval
+          requires:
+            - integration-test-development
+            - slack/on-hold
+      - deploy:
+          name: deploy-production
+          requires:
+            - hold
+          context:
+            - production
+            - serverless
+          <<: *slack-deploy-post-step
+  deploy-dev-only:
+    when: << pipeline.parameters.dev-only >>
+    jobs:
+      - build-and-push-image:
+          name: build-and-push-image
+          filters:
+            branches:
+              only:
+                - main
+          context:
+            - development
+            - serverless
+          <<: *slack-fail-post-step
+      - deploy:
+          name: deploy-development
+          requires:
+            - build-and-push-image
+          context:
+            - development
+            - serverless
+          <<: *slack-fail-post-step
+      - integration-test:
+          name: integration-test-development
+          requires:
+            - deploy-development
+          context:
+            - development
+            - serverless
+          <<: *slack-deploy-post-step

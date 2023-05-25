@@ -1,0 +1,163 @@
+# Node Circle CI npm config
+version: 2.1
+
+jobs:
+  test:
+    executor: node/default
+    steps:
+      - when:
+          condition: << pipeline.parameters.test >>
+          steps:
+            - checkout
+            - node/install-packages
+            - run:
+                name: Run NPM test
+                command: |
+                  npm install mocha-junit-reporter
+                  npm run unit:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
+            - store_test_results:
+                path: test-results
+            - store_artifacts:
+                path: ./test-results/mocha/results.xml
+      - unless:
+          condition: << pipeline.parameters.test >>
+          steps:
+            - run:
+                name: Skip unit tests
+                command: echo "Skipping unit tests"
+
+  audit:
+    executor: node/default
+    steps:
+      - when:
+          condition: << pipeline.parameters.audit >>
+          steps:
+            - checkout
+            - node/install-packages
+            - run:
+                name: Run Audit
+                command: npm audit --audit-level=high
+      - unless:
+          condition: << pipeline.parameters.audit >>
+          steps:
+            - run:
+                name: Skip audit test
+                command: echo "Skipping audit test"
+
+  publish:
+    executor: node/default
+    steps:
+      - when:
+          condition: << pipeline.parameters.publish >>
+          steps:
+            - checkout
+            - node/install-packages
+            - run:
+                name: Publish to NPM
+                command: |
+                  echo "//registry.npmjs.org/:_authToken=${NPM_AUTOMATION_TOKEN}" > .npmrc
+                  if npm run | grep build; then npm run build; fi
+                  npm publish
+      - unless:
+          condition: << pipeline.parameters.publish >>
+          steps:
+            - run:
+                name: Skip publish
+                command: echo "Skipping publish"
+
+orbs:
+  node: circleci/node@5
+  slack: circleci/slack@4
+  launchdarkly: launchdarkly/ld-find-code-refs@2.8.0
+
+slack-post-step: &slack-post-step
+  post-steps:
+    - slack/notify:
+        event: pass
+        template: basic_success_1
+        channel: deployments
+    - slack/notify:
+        event: fail
+        template: basic_fail_1
+        channel: deployments
+
+slack-fail-post-step: &slack-fail-post-step
+  post-steps:
+    - slack/notify:
+        event: fail
+        template: basic_fail_1
+        channel: deployments
+
+slack-publish-post-step: &slack-publish-post-step
+  post-steps:
+    - slack/notify:
+        event: pass
+        template: success_tagged_deploy_1
+        channel: deployments
+    - slack/notify:
+        event: fail
+        template: basic_fail_1
+        channel: deployments
+
+parameters:
+  test:
+    type: boolean
+    default: true
+  audit:
+    type: boolean
+    default: true
+  publish:
+    type: boolean
+    default: true
+
+workflows:
+  test:
+    jobs:
+      - test:
+          name: test
+          filters:
+            branches:
+              ignore:
+                - main
+                - master
+          context:
+            - serverless
+          <<: *slack-fail-post-step
+      - audit:
+          name: audit
+          requires:
+            - test
+          context:
+            - serverless
+          <<: *slack-post-step
+      - launchdarkly/find-code-references:
+          name: launchdarkly
+          proj_key: $LD_PROJ_KEY
+          repo_type: github
+          repo_url: https://github.com/ClickSend/$CIRCLE_PROJECT_REPONAME
+          default_branch: main
+          requires:
+            - audit
+          context:
+            - development
+            - serverless
+          pre-steps:
+            - run:
+                name: "Add curl and bash"
+                command: |
+                  apk update && apk upgrade
+                  apk add curl
+                  apk add --no-cache bash
+          <<: *slack-fail-post-step
+  publish:
+    jobs:
+      - publish:
+          name: publish
+          filters:
+            branches:
+              only:
+                - main
+                - master
+          context:
+            - serverless
+          <<: *slack-publish-post-step
