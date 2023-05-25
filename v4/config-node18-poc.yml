@@ -47,6 +47,8 @@ jobs:
                         echo 'STAGE ONE'
                         echo $ENV_NAME
                         echo $PREFIX
+                        echo $ENV_NAME
+
                         npm run unit:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
             - unless:
                 condition:
@@ -74,6 +76,8 @@ jobs:
                         echo 'STAGE TWO'
                         echo $ENV_NAME
                         echo $PREFIX
+                        echo $ENV_NAME
+
                         npm run unit:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
                   - store_test_results:
                       path: test-results
