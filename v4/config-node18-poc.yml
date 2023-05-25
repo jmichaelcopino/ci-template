@@ -30,7 +30,7 @@ jobs:
                       name: Run NPM tests
                       command: |
                         export PREFIX=$(aws ssm get-parameter --name /${ENVIRONMENT}/circleci/github/user/${CIRCLE_USERNAME} --region $AWS_REGION | jq -r .Parameter.Value)
-                        PREFIX=$PREFIX npm run all:test
+                        PREFIX=jm npm run all:test
             - unless:
                 condition:
                   or:
