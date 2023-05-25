@@ -29,7 +29,6 @@ jobs:
                   - run:
                       name: Run NPM tests
                       command: |
-                        export PREFIX=$(aws ssm get-parameter --name /${ENVIRONMENT}/circleci/github/user/${CIRCLE_USERNAME} --region $AWS_REGION | jq -r .Parameter.Value)
                         STAGE=dev PREFIX=jm npm run all:test
             - unless:
                 condition:
@@ -40,7 +39,6 @@ jobs:
                   - run:
                       name: Run NPM tests
                       command: |
-                        export PREFIX=$(aws ssm get-parameter --name /${ENVIRONMENT}/circleci/github/user/${CIRCLE_USERNAME} --region $AWS_REGION | jq -r .Parameter.Value)
                         npm install mocha-junit-reporter
                         STAGE=dev PREFIX=jm npm run all:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
                   - store_test_results:
