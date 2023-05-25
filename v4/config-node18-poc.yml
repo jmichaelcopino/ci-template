@@ -11,6 +11,7 @@ jobs:
           condition: << pipeline.parameters.test >>
           steps:
             - checkout
+            - aws-cli/setup
             - node/install-packages
             - when:
                 condition: << pipeline.parameters.pytest >>
@@ -38,13 +39,10 @@ jobs:
                         else
                           export ENVIRONMENT=$ENV_NAME
                         fi
-
                         export PREFIX=$(aws ssm get-parameter --name /${ENVIRONMENT}/circleci/github/user/${CIRCLE_USERNAME} --region $AWS_REGION | jq -r .Parameter.Value)
-
                         if [[ -z $PREFIX ]]; then
                           export PREFIX=$CIRCLE_USERNAME
                         fi
-
                         npm install mocha-junit-reporter
                         npm run all:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
             - unless:
@@ -65,13 +63,10 @@ jobs:
                         else
                           export ENVIRONMENT=$ENV_NAME
                         fi
-
                         export PREFIX=$(aws ssm get-parameter --name /${ENVIRONMENT}/circleci/github/user/${CIRCLE_USERNAME} --region $AWS_REGION | jq -r .Parameter.Value)
-
                         if [[ -z $PREFIX ]]; then
                           export PREFIX=$CIRCLE_USERNAME
                         fi
-
                         npm install mocha-junit-reporter
                         npm run all:test -- --reporter mocha-junit-reporter --reporter-options mochaFile=test-results/mocha/results.xml
                   - store_test_results:
